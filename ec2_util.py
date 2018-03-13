@@ -191,7 +191,7 @@ def get_existing_cluster(conn, cluster_name, die_on_error=True):
             group_names = [g.name for g in inst.groups]
             if group_names == [cluster_name + "-master"]:
                 master_nodes.append(inst)
-            elif group_names == [cluster_name + "-slaves"]:
+            elif group_names == [cluster_name + "-slave"]:
                 slave_nodes.append(inst)
     if any((master_nodes, slave_nodes)):
         print ("Found %d master(s), %d slaves" % (len(master_nodes), len(slave_nodes)))
@@ -203,3 +203,17 @@ def get_existing_cluster(conn, cluster_name, die_on_error=True):
         else:
             print >> sys.stderr, "ERROR: Could not find any existing cluster"
         sys.exit(1)
+
+
+def terminate_instances(conn, instance_ids):
+    print "Terminating {} instances".format(len(instance_ids))
+    for inst in instance_ids:
+        conn.terminate_instances(instance_ids=[inst.id])
+        print "Terminated {}".format(inst)
+
+def stop_instances(conn, instances):
+    instance_ids = [inst.id for inst in instances]
+    print "Stopping {} instances".format(",".join(instance_ids)
+    conn.stop_instances(instance_ids=instance_)
+
+
