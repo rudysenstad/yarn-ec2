@@ -41,7 +41,7 @@ def parse_args():
         help="Type of instance to launch (default: m3.xlarge). " +
              "WARNING: must be 64-bit; small instances won't work")
     parser.add_option(
-        "-r", "--region", default="us-west-2",
+        "-r", "--region", default="us-east-1",
         help="EC2 region zone to launch instances in")
     parser.add_option(
         "-z", "--zone", default="",
@@ -63,6 +63,9 @@ def parse_args():
     parser.add_option(
         "--delete-groups", action="store_true", default=False,
         help="When destroying a cluster, delete the security groups that were created")
+    parser.add_option(
+        "--vpc", default="",
+        help="VPC to add to EC2 instances in addition to the yarn specific groups")
 
     (opts, args) = parser.parse_args()
     if len(args) != 2:
@@ -182,6 +185,9 @@ def launch_master(conn, opts):
     # Check if instances are already running in our groups
     existing_masters, existing_slaves = ec2_util.get_existing_cluster(conn, cluster_name,
                                                                       die_on_error=False)
+    print "existing_master: {}".format(existing_masters)
+    print "existing_slaves: {}".format(existing_slaves)
+
     if existing_slaves:
         print >> stderr, ("ERROR: There are already instances running in " +
                           "group %s or %s" % (group.name, slave_group.name))
@@ -196,7 +202,7 @@ def launch_master(conn, opts):
     except:
         print >> stderr, "Could not find AMI " + opts.ami
         sys.exit(1)
-
+    print "AMI Image: {}".format(image)
     # Launch or resume masters
     if existing_masters:
         print "Starting master..."
@@ -210,6 +216,7 @@ def launch_master(conn, opts):
         master_type = opts.instance_type
         if opts.zone == 'all':
             opts.zone = random.choice(conn.get_all_zones()).name
+        print "Zone: {}".format(opts.zone)
         master_res = image.run(key_name=opts.key_pair,
                                security_groups=[master_group],
                                instance_type=master_type,
@@ -218,7 +225,8 @@ def launch_master(conn, opts):
                                max_count=1,
                                block_device_map=block_map,
                                user_data=get_user_data('bootstrap.py', '',
-                                                       master_type, opts.include_aws_key))
+                                                       master_type, opts.include_aws_key)
+                               )#security_group_ids=['vpc-ec15e68b'])
         master_nodes = master_res.instances
         print "Launched master in %s, regid = %s" % (opts.zone, master_res.id)
 
@@ -429,6 +437,14 @@ def main():
         master = master_nodes[0].public_dns_name
         subprocess.check_call(
             ssh_command(opts)  + ['-D', '9595'] + ['-t', "%s@%s" % (opts.user, master)])
+    elif action == "stop":
+        (master_nodes, slave_nodes) = ec2_util.get_existing_cluster(conn, cluster_name)
+        ec2_util.stop_instances(conn, master_nodes)
+        ec2_util.stop_instances(conn, slave_nodes)
+    elif action == "terminate":
+        (master_nodes, slave_nodes) = ec2_util.get_existing_cluster(conn, cluster_name)
+        ec2_util.terminate_instances(conn, master_nodes)
+        ec2_util.terminate_instances(conn, slave_nodes)
     else:
         print >> sys.stderr, "Invalid action: %s" % action
         sys.exit(1)
