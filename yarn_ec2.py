@@ -44,7 +44,7 @@ def parse_args():
         "-r", "--region", default="us-east-1",
         help="EC2 region zone to launch instances in")
     parser.add_option(
-        "-z", "--zone", default="",
+        "-z", "--zone", default="us-east-1e",
         help="Availability zone to launch instances in, or 'all' to spread " +
              "slaves across multiple (an additional $0.01/Gb for bandwidth" +
              "between zones applies)")
@@ -64,7 +64,7 @@ def parse_args():
         "--delete-groups", action="store_true", default=False,
         help="When destroying a cluster, delete the security groups that were created")
     parser.add_option(
-        "--vpc", default="",
+        "--vpc", default=None,
         help="VPC to add to EC2 instances in addition to the yarn specific groups")
 
     (opts, args) = parser.parse_args()
@@ -142,6 +142,28 @@ def get_ami(instance):
     else:
         return 'ami-5189a661'
 
+def delete_groups(conn, cluster_name):
+    master_group = ec2_util.get_or_make_group(conn, cluster_name + "-master")
+    slave_group = ec2_util.get_or_make_group(conn, cluster_name + "-slave")
+    for rule in master_group.rules:
+        master_group.revoke(rule.ip_protocol, rule.from_port, rule.to_port, '0.0.0.0/0')
+    for rule in slave_group.rules:
+        slave_group.revoke(rule.ip_protocol, rule.from_port, rule.to_port, '0.0.0.0/0')
+    slave_group.revoke('icmp', -1, -1, src_group=slave_group)
+    slave_group.revoke('icmp', -1, -1, src_group=master_group)
+    master_group.revoke('icmp', -1, -1, src_group=slave_group)
+    master_group.revoke('icmp', -1, -1, src_group=master_group)
+    slave_group.revoke('tcp', 1, 65535, src_group=slave_group)
+    slave_group.revoke('tcp', 1, 65535, src_group=master_group)
+    master_group.revoke('tcp', 1, 65535, src_group=slave_group)
+    master_group.revoke('tcp', 1, 65535, src_group=master_group)
+    slave_group.revoke('udp', 1, 65535, src_group=slave_group)
+    slave_group.revoke('udp', 1, 65535, src_group=master_group)
+    master_group.revoke('udp', 1, 65535, src_group=slave_group)
+    master_group.revoke('udp', 1, 65535, src_group=master_group)
+    slave_group.delete()
+    master_group.delete()
+
 # Launch master of a cluster of the given name, by setting up its security groups,
 # and then starting new instances in them.
 # Returns a tuple of EC2 reservation objects for the master and slaves
@@ -156,11 +178,17 @@ def launch_master(conn, opts):
         sys.exit(1)
 
     print "Setting up security groups..."
-    master_group = ec2_util.get_or_make_group(conn, cluster_name + "-master")
-    slave_group = ec2_util.get_or_make_group(conn, cluster_name + "-slave")
+    master_group = ec2_util.get_or_make_group(conn, cluster_name + "-master", vpc_id=opts.vpc)
+    slave_group = ec2_util.get_or_make_group(conn, cluster_name + "-slave", vpc_id=opts.vpc)
     if master_group.rules == []:  # Group was just now created
-        master_group.authorize(src_group=master_group)
-        master_group.authorize(src_group=slave_group)
+#        master_group.authorize(src_group=master_group)
+#        master_group.authorize(src_group=slave_group)
+        master_group.authorize('udp', 1, 65535, src_group=slave_group)
+        master_group.authorize('udp', 1, 65535, src_group=master_group)
+        master_group.authorize('icmp', -1, -1, src_group=slave_group)
+        master_group.authorize('icmp', -1, -1, src_group=master_group)
+        master_group.authorize('tcp', 1, 65535, src_group=slave_group)
+        master_group.authorize('tcp', 1, 65535, src_group=master_group)
         master_group.authorize('tcp', 22, 22, '0.0.0.0/0')
         master_group.authorize('tcp', 8000, 8100, '0.0.0.0/0')
         master_group.authorize('tcp', 9000, 9999, '0.0.0.0/0')
@@ -172,8 +200,14 @@ def launch_master(conn, opts):
         master_group.authorize('tcp', 5080, 5080, '0.0.0.0/0')
         master_group.authorize('udp', 0, 65535, '0.0.0.0/0')
     if slave_group.rules == []:  # Group was just now created
-        slave_group.authorize(src_group=master_group)
-        slave_group.authorize(src_group=slave_group)
+#        slave_group.authorize(src_group=master_group)
+#        slave_group.authorize(src_group=slave_group)
+        slave_group.authorize('icmp', -1, -1, src_group=slave_group)
+        slave_group.authorize('icmp', -1, -1, src_group=master_group)
+        slave_group.authorize('tcp', 1, 65535, src_group=slave_group)
+        slave_group.authorize('tcp', 1, 65535, src_group=master_group)
+        slave_group.authorize('udp', 1, 65535, src_group=slave_group)
+        slave_group.authorize('udp', 1, 65535, src_group=master_group)
         slave_group.authorize('tcp', 22, 22, '0.0.0.0/0')
         slave_group.authorize('tcp', 8000, 8100, '0.0.0.0/0')
         slave_group.authorize('tcp', 9000, 9999, '0.0.0.0/0')
@@ -224,9 +258,9 @@ def launch_master(conn, opts):
                                min_count=1,
                                max_count=1,
                                block_device_map=block_map,
+        #                       subnet_id='subnet-a67322d0',
                                user_data=get_user_data('bootstrap.py', '',
-                                                       master_type, opts.include_aws_key)
-                               )#security_group_ids=['vpc-ec15e68b'])
+                                                       master_type, opts.include_aws_key))
         master_nodes = master_res.instances
         print "Launched master in %s, regid = %s" % (opts.zone, master_res.id)
 
@@ -437,14 +471,15 @@ def main():
         master = master_nodes[0].public_dns_name
         subprocess.check_call(
             ssh_command(opts)  + ['-D', '9595'] + ['-t', "%s@%s" % (opts.user, master)])
-    elif action == "stop":
-        (master_nodes, slave_nodes) = ec2_util.get_existing_cluster(conn, cluster_name)
-        ec2_util.stop_instances(conn, master_nodes)
-        ec2_util.stop_instances(conn, slave_nodes)
+#    elif action == "stop":
+ #       (master_nodes, slave_nodes) = ec2_util.get_existing_cluster(conn, cluster_name)
+  #      ec2_util.stop_instances(conn, master_nodes)
+   #     ec2_util.stop_instances(conn, slave_nodes)
     elif action == "terminate":
         (master_nodes, slave_nodes) = ec2_util.get_existing_cluster(conn, cluster_name)
         ec2_util.terminate_instances(conn, master_nodes)
         ec2_util.terminate_instances(conn, slave_nodes)
+        delete_groups(conn, cluster_name)
     else:
         print >> sys.stderr, "Invalid action: %s" % action
         sys.exit(1)

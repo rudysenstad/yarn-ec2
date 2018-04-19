@@ -137,7 +137,7 @@ def wait_for_instances(conn, instances):
             return
 
 # Get the EC2 security group of the given name, creating it if it doesn't exist
-def get_or_make_group(conn, name, make_if_not_exist = True):
+def get_or_make_group(conn, name, make_if_not_exist = True, vpc_id=None, description="MODE EC2 group"):
     groups = conn.get_all_security_groups()
     group = [g for g in groups if g.name == name]
     if len(group) > 0:
@@ -147,7 +147,7 @@ def get_or_make_group(conn, name, make_if_not_exist = True):
             print >> sys.stderr, "ERROR: Could not find any existing security group"
             sys.exit(1)
         print "Creating security group " + name
-        return conn.create_security_group(name, "MODE EC2 group")
+        return conn.create_security_group(name, description, vpc_id=vpc_id)
 
 # Check whether a given EC2 instance object is in a state we consider active,
 # i.e. not terminating or terminated. We count both stopping and stopped as
@@ -202,7 +202,7 @@ def get_existing_cluster(conn, cluster_name, die_on_error=True):
             print >> sys.stderr, "ERROR: Could not find master in group " + cluster_name + "-master"
         else:
             print >> sys.stderr, "ERROR: Could not find any existing cluster"
-        sys.exit(1)
+        return [],[]
 
 
 def terminate_instances(conn, instance_ids):
@@ -211,9 +211,9 @@ def terminate_instances(conn, instance_ids):
         conn.terminate_instances(instance_ids=[inst.id])
         print "Terminated {}".format(inst)
 
-def stop_instances(conn, instances):
-    instance_ids = [inst.id for inst in instances]
-    print "Stopping {} instances".format(",".join(instance_ids)
-    conn.stop_instances(instance_ids=instance_)
+#def stop_instances(conn, instances):
+ #   instance_ids = [inst.id for inst in instances]
+  #  print "Stopping {} instances".format(",".join(instance_ids)
+   # conn.stop_instances(instance_ids=instance_)
 
 
