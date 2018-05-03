@@ -44,7 +44,7 @@ def parse_args():
         "-r", "--region", default="us-east-1",
         help="EC2 region zone to launch instances in")
     parser.add_option(
-        "-z", "--zone", default="us-east-1e",
+        "-z", "--zone", default="us-east-1c",
         help="Availability zone to launch instances in, or 'all' to spread " +
              "slaves across multiple (an additional $0.01/Gb for bandwidth" +
              "between zones applies)")
@@ -66,6 +66,9 @@ def parse_args():
     parser.add_option(
         "--vpc", default=None,
         help="VPC to add to EC2 instances in addition to the yarn specific groups")
+    parser.add_option(
+        "-S", "--subnet", default='subnet-a67322d0',
+        help="Subnet-ID in the VPC specified")
 
     (opts, args) = parser.parse_args()
     if len(args) != 2:
@@ -111,7 +114,7 @@ def get_user_data(fname, master_dns, instance_type, include_aws_key):
     data = open(fname).readlines()
     ret = []
     if include_aws_key:
-        print "include AWS key option is switched on..."
+        print("include AWS key option is switched on...")
 
     for l in data:
         special = True
@@ -141,28 +144,37 @@ def get_ami(instance):
         return 'ami-6989a659'
     else:
         return 'ami-5189a661'
+        
+def delete_security_group(security_group, dependent_group):
+    if security_group and security_group.rules:
+        for rule in security_group.rules:
+            try:
+                security_group.revoke(rule.ip_protocol, rule.from_port, rule.to_port, '0.0.0.0/0')
+            except:
+                print("Error revoking {}".format(rule))
+        rule_info = [['icmp', -1, -1], ['tcp', 1, 65535], ['udp', 1, 65535]]
+        groups = [dependent_group, security_group]
+        for this_group in groups:
+            for rule in rule_info:
+                if this_group:
+                    try:
+                        security_group.revoke(rule[0], rule[1], rule[2], src_group=this_group)
+                    except:
+                        continue
+    
+
 
 def delete_groups(conn, cluster_name):
-    master_group = ec2_util.get_or_make_group(conn, cluster_name + "-master")
-    slave_group = ec2_util.get_or_make_group(conn, cluster_name + "-slave")
-    for rule in master_group.rules:
-        master_group.revoke(rule.ip_protocol, rule.from_port, rule.to_port, '0.0.0.0/0')
-    for rule in slave_group.rules:
-        slave_group.revoke(rule.ip_protocol, rule.from_port, rule.to_port, '0.0.0.0/0')
-    slave_group.revoke('icmp', -1, -1, src_group=slave_group)
-    slave_group.revoke('icmp', -1, -1, src_group=master_group)
-    master_group.revoke('icmp', -1, -1, src_group=slave_group)
-    master_group.revoke('icmp', -1, -1, src_group=master_group)
-    slave_group.revoke('tcp', 1, 65535, src_group=slave_group)
-    slave_group.revoke('tcp', 1, 65535, src_group=master_group)
-    master_group.revoke('tcp', 1, 65535, src_group=slave_group)
-    master_group.revoke('tcp', 1, 65535, src_group=master_group)
-    slave_group.revoke('udp', 1, 65535, src_group=slave_group)
-    slave_group.revoke('udp', 1, 65535, src_group=master_group)
-    master_group.revoke('udp', 1, 65535, src_group=slave_group)
-    master_group.revoke('udp', 1, 65535, src_group=master_group)
-    slave_group.delete()
-    master_group.delete()
+    master_group = ec2_util.get_or_make_group(conn, cluster_name + "-master", create=False)
+    slave_group = ec2_util.get_or_make_group(conn, cluster_name + "-slave", create=False)
+    if master_group:
+        delete_security_group(master_group, slave_group)
+    if slave_group:
+        delete_security_group(slave_group, master_group)
+    if master_group:
+        master_group.delete()
+    if slave_group:
+        slave_group.delete()
 
 # Launch master of a cluster of the given name, by setting up its security groups,
 # and then starting new instances in them.
@@ -248,17 +260,22 @@ def launch_master(conn, opts):
         # Create block device mapping so that we can add an EBS volume if asked to
         block_map = ec2_util.get_block_device(opts.instance_type, 0)
         master_type = opts.instance_type
+        cpe_all_security_group = ec2_util.get_or_make_group(conn, "_CPE_allow_all_from_corp", create=False)
+        security_group_ids = [master_group.id]
+        if cpe_all_security_group:
+            security_group_ids.append(cpe_all_security_group.id)
         if opts.zone == 'all':
             opts.zone = random.choice(conn.get_all_zones()).name
         print "Zone: {}".format(opts.zone)
         master_res = image.run(key_name=opts.key_pair,
-                               security_groups=[master_group],
+#                               security_groups=[master_group],
                                instance_type=master_type,
                                placement=opts.zone,
                                min_count=1,
                                max_count=1,
                                block_device_map=block_map,
-        #                       subnet_id='subnet-a67322d0',
+                               security_group_ids=security_group_ids,
+                               subnet_id=opts.subnet,
                                user_data=get_user_data('bootstrap.py', '',
                                                        master_type, opts.include_aws_key))
         master_nodes = master_res.instances
@@ -308,17 +325,22 @@ def launch_slaves(conn, opts):
     except:
         print >> stderr, "Could not find AMI " + opts.ami
         sys.exit(1)
-
+    cpe_all_security_group = ec2_util.get_or_make_group(conn, "_CPE_allow_all_from_corp", create=False)
+    security_group_ids = [master_group.id]
+    if cpe_all_security_group:
+        security_group_ids.append(cpe_all_security_group.id)
     master = existing_masters[0]
     block_map = ec2_util.get_block_device(opts.instance_type, 0)
     zone = master.placement
     slave_res = image.run(key_name=opts.key_pair,
-                          security_groups=[slave_group],
+                          #security_groups=[slave_group],
                           instance_type=opts.instance_type,
                           placement=zone,
                           min_count=opts.slaves,
                           max_count=opts.slaves,
                           block_device_map=block_map,
+                          security_group_ids=security_group_ids,
+                          subnet_id=opts.subnet,
                           user_data=get_user_data('bootstrap.py',
                                                   master.private_dns_name,
                                                   opts.instance_type,
@@ -460,15 +482,18 @@ def main():
         master_nodes = launch_spot_slaves(conn, opts)
     elif action == "get-master":
         (master_nodes, slave_nodes) = ec2_util.get_existing_cluster(conn, cluster_name)
-        print master_nodes[0].public_dns_name
+        print master_nodes[0].private_dns_name
     elif action == "login":
         (master_nodes, slave_nodes) = ec2_util.get_existing_cluster(conn, cluster_name)
-        master = master_nodes[0].public_dns_name
+        print(master_nodes)
+#        master = master_nodes[0].public_dns_name
+        master = master_nodes[0].private_dns_name
         subprocess.check_call(
             ssh_command(opts)  + ['-t', "%s@%s" % (opts.user, master)])
     elif action == "forward-port":
         (master_nodes, slave_nodes) = ec2_util.get_existing_cluster(conn, cluster_name)
-        master = master_nodes[0].public_dns_name
+#        master = master_nodes[0].public_dns_name
+        master = master_nodes[0].private_dns_name
         subprocess.check_call(
             ssh_command(opts)  + ['-D', '9595'] + ['-t', "%s@%s" % (opts.user, master)])
 #    elif action == "stop":

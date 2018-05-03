@@ -137,17 +137,19 @@ def wait_for_instances(conn, instances):
             return
 
 # Get the EC2 security group of the given name, creating it if it doesn't exist
-def get_or_make_group(conn, name, make_if_not_exist = True, vpc_id=None, description="MODE EC2 group"):
+def get_or_make_group(conn, name, make_if_not_exist = True, vpc_id=None, description="MODE EC2 group", create=True):
     groups = conn.get_all_security_groups()
     group = [g for g in groups if g.name == name]
     if len(group) > 0:
         return group[0]
-    else:
+    elif create:
         if not make_if_not_exist:
             print >> sys.stderr, "ERROR: Could not find any existing security group"
             sys.exit(1)
         print "Creating security group " + name
         return conn.create_security_group(name, description, vpc_id=vpc_id)
+    else:
+        return None
 
 # Check whether a given EC2 instance object is in a state we consider active,
 # i.e. not terminating or terminated. We count both stopping and stopped as
@@ -189,9 +191,9 @@ def get_existing_cluster(conn, cluster_name, die_on_error=True):
         active = [i for i in res.instances if is_active(i)]
         for inst in active:
             group_names = [g.name for g in inst.groups]
-            if group_names == [cluster_name + "-master"]:
+            if cluster_name + "-master" in group_names:
                 master_nodes.append(inst)
-            elif group_names == [cluster_name + "-slave"]:
+            elif cluster_name + "-slave" in group_names:
                 slave_nodes.append(inst)
     if any((master_nodes, slave_nodes)):
         print ("Found %d master(s), %d slaves" % (len(master_nodes), len(slave_nodes)))
