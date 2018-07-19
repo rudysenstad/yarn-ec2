@@ -1,3 +1,7 @@
+** Fork Reason **
+- ec2_util had a few bugs
+- improved the cleanup process so no lingering artifacts are left behind (like security groups)
+
 YARN EC2
 ========
 This is a script to help you quickly setup a dynamic YARN cluster on EC2.
